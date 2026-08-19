@@ -203,7 +203,7 @@ if prompt := st.chat_input("증설 계획 및 요청사항을 자유롭게 입�
 
                     # 모델 설정 (서버가 쾌적하고 도면 판독률이 높은 gemini-1.5-flash 모델 적용)
                     model = genai.GenerativeModel(
-                        model_name='gemini-1.5-flash',
+                        model_name='gemini-3.6-flash',
                         system_instruction=sys_instruction,
                         tools=tools_list
                     )
