@@ -156,6 +156,22 @@ def generate_excel_document(prompt_text, ai_response_text):
     output.seek(0)
     return output
 
+# 멀티모달 파일 처리 헬퍼 함수
+def process_multimodal_file(file_obj, title_text):
+    text_context = ""
+    media_item = None
+    if file_obj:
+        if file_obj.name.endswith(('.csv', '.xlsx')):
+            df = pd.read_csv(file_obj) if file_obj.name.endswith('.csv') else pd.read_excel(file_obj)
+            text_context = f"\n\n### [{title_text}]\n{df.to_string(index=False)}"
+        elif file_obj.type == "application/pdf":
+            text_context = f"\n\n### [{title_text}]\n(첨부된 PDF 문서 시각적 데이터 참조)"
+            media_item = {"mime_type": "application/pdf", "data": file_obj.getvalue()}
+        else:
+            text_context = f"\n\n### [{title_text}]\n(첨부된 이미지 시각적 데이터 참조)"
+            media_item = Image.open(file_obj)
+    return text_context, media_item
+
 # ==========================================
 # 3. Streamlit UI
 # ==========================================
@@ -171,26 +187,21 @@ with st.sidebar:
     sld_file = st.file_uploader("1. 단선도(SLD) 도면", type=["jpg", "png", "pdf"])
     if sld_file and sld_file.type != "application/pdf": st.image(Image.open(sld_file), use_container_width=True)
 
-    scada_file = st.file_uploader("2. SCADA 부하 데이터", type=["csv", "xlsx"])
-    scada_context = ""
-    if scada_file:
-        df = pd.read_csv(scada_file) if scada_file.name.endswith('.csv') else pd.read_excel(scada_file)
-        scada_context = f"\n\n### [업로드된 SCADA 실시간 데이터 참고]\n{df.to_string(index=False)}"
-        st.success("✅ SCADA 연동됨")
+    scada_file = st.file_uploader("2. SCADA 부하 데이터", type=["csv", "xlsx", "jpg", "png", "pdf"])
+    scada_context, scada_media = process_multimodal_file(scada_file, "업로드된 SCADA 실시간 데이터 참고")
+    if scada_file: st.success("✅ SCADA 연동됨")
 
-    labor_file = st.file_uploader("3. 노무비 단가표 (선택)", type=["csv", "xlsx"])
-    labor_context = "\n\n### [노무비 단가 정보]\n업로드된 파일 없음. 2026년 표준 내선전공 단가(280,000원/인) 적용 요망."
-    if labor_file:
-        df_labor = pd.read_csv(labor_file) if labor_file.name.endswith('.csv') else pd.read_excel(labor_file)
-        labor_context = f"\n\n### [업로드된 노무비 단가표 참고]\n{df_labor.to_string(index=False)}"
-        st.success("✅ 노무비 DB 연동됨")
+    labor_file = st.file_uploader("3. 노무비 단가표 (선택)", type=["csv", "xlsx", "jpg", "png", "pdf"])
+    labor_context, labor_media = process_multimodal_file(labor_file, "업로드된 노무비 단가표 참고")
+    if not labor_file:
+        labor_context = "\n\n### [노무비 단가 정보]\n업로드된 파일 없음. 2026년 표준 내선전공 단가(280,000원/인) 적용 요망."
+    else: st.success("✅ 노무비 DB 연동됨")
 
-    load_schedule_file = st.file_uploader("4. 증설 부하 리스트 (선택)", type=["csv", "xlsx"])
-    load_schedule_context = "\n\n### [증설 부하 리스트]\n업로드된 파일 없음. 사용자의 채팅 프롬프트에서 증설 계획을 파악하세요."
-    if load_schedule_file:
-        df_schedule = pd.read_csv(load_schedule_file) if load_schedule_file.name.endswith('.csv') else pd.read_excel(load_schedule_file)
-        load_schedule_context = f"\n\n### [업로드된 증설 부하 리스트 참고]\n{df_schedule.to_string(index=False)}"
-        st.success("✅ 증설 부하 리스트 연동됨")
+    load_schedule_file = st.file_uploader("4. 증설 부하 리스트 (선택)", type=["csv", "xlsx", "jpg", "png", "pdf"])
+    load_schedule_context, load_schedule_media = process_multimodal_file(load_schedule_file, "업로드된 증설 부하 리스트 참고")
+    if not load_schedule_file:
+        load_schedule_context = "\n\n### [증설 부하 리스트]\n업로드된 파일 없음. 사용자의 채팅 프롬프트에서 증설 계획을 파악하세요."
+    else: st.success("✅ 증설 부하 리스트 연동됨")
 
 if "eng_msg" not in st.session_state: st.session_state.eng_msg = []
 if "tutor_msg" not in st.session_state: st.session_state.tutor_msg = []
@@ -199,24 +210,24 @@ if "latest_eng_prompt" not in st.session_state: st.session_state.latest_eng_prom
 
 if app_mode == "🏗️ 증설 엔지니어링 (발주/안전)":
     st.subheader("📊 부하 증설 검토 및 공사 발주 자동화")
-    st.info("장비 용량, 거리 등을 입력하거나 부하 리스트 파일을 업로드하면 AI가 SCADA와 DB를 조회하여 최적화 보고서를 작성합니다.")
+    st.info("장비 용량, 거리 등을 입력하거나 부하 리스트(이미지/PDF 가능)를 업로드하면 AI가 분석하여 최적화 보고서를 작성합니다.")
     
     for msg in st.session_state.eng_msg:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
         
-    if prompt := st.chat_input("예: 리스트 파일의 부하를 검토해줘. 또는 TR-1에 500kW 200m 증설 (C공사, 40도)"):
+    if prompt := st.chat_input("예: 캡처된 증설 리스트 기반으로 검토해줘. 또는 TR-1에 500kW 200m 증설"):
         st.session_state.eng_msg.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
 
         if API_KEY:
             with st.chat_message("assistant"):
-                with st.spinner("데이터 분석 및 정밀 규격 산출 중..."):
+                with st.spinner("이미지/PDF 분석 및 정밀 규격 산출 중..."):
                     genai.configure(api_key=API_KEY)
                     sys_instruct = """당신은 Hook-Up 공사를 총괄하는 전기 엔지니어입니다.
                     다음 순서로 검토를 진행하세요:
-                    1. [증설 부하 리스트] 표가 있다면 해당 표의 부하(kW)와 거리(m)를 합산하거나 우선 적용하여 evaluate_capacity_tool 및 precision_design_tool을 호출하세요. (표가 없으면 사용자의 채팅 프롬프트를 기준으로 호출)
-                    2. evaluate_capacity_tool 호출 시 [SCADA 실시간 데이터] 참조
-                    3. generate_boq_tool 호출 시 [노무비 단가 정보] 참조
+                    1. [증설 부하 리스트] 이미지/문서/표가 있다면 해당 데이터의 부하(kW)와 거리(m)를 합산하거나 우선 적용하여 evaluate_capacity_tool 및 precision_design_tool을 호출하세요. (데이터가 없으면 채팅 프롬프트 기준)
+                    2. evaluate_capacity_tool 호출 시 [SCADA 실시간 데이터] 이미지/문서/표 참조
+                    3. generate_boq_tool 호출 시 [노무비 단가 정보] 이미지/문서/표 참조
                     
                     최종 보고서 목차:
                     
@@ -241,9 +252,15 @@ if app_mode == "🏗️ 증설 엔지니어링 (발주/안전)":
                     chat = model.start_chat(enable_automatic_function_calling=True)
                     
                     contents = []
+                    # SLD 파일 처리
                     if sld_file:
                         if sld_file.type == "application/pdf": contents.append({"mime_type": "application/pdf", "data": sld_file.getvalue()})
                         else: contents.append(Image.open(sld_file))
+                    
+                    # 새로운 멀티모달 파일(이미지/PDF) 추가
+                    for media_item in [scada_media, labor_media, load_schedule_media]:
+                        if media_item: contents.append(media_item)
+
                     contents.append(prompt + scada_context + labor_context + load_schedule_context)
 
                     retry_delay = 5
