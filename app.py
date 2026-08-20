@@ -187,9 +187,11 @@ with st.sidebar:
     sld_file = st.file_uploader("1. 단선도(SLD) 도면", type=["jpg", "png", "pdf"])
     if sld_file and sld_file.type != "application/pdf": st.image(Image.open(sld_file), use_container_width=True)
 
-    scada_file = st.file_uploader("2. SCADA 부하 데이터", type=["csv", "xlsx", "jpg", "png", "pdf"])
+    scada_file = st.file_uploader("2. SCADA 부하 데이터 (선택)", type=["csv", "xlsx", "jpg", "png", "pdf"])
     scada_context, scada_media = process_multimodal_file(scada_file, "업로드된 SCADA 실시간 데이터 참고")
-    if scada_file: st.success("✅ SCADA 연동됨")
+    if not scada_file:
+        scada_context = "\n\n### [SCADA 데이터 부재]\n업로드된 SCADA 데이터가 없습니다. 단선도(SLD)를 분석하여 목표 변압기 하위에 연결된 기존 부하들의 총합을 구하고, 이를 100% 사용(부하율 100%)한다고 가정한 값을 현재 부하량으로 산정하세요."
+    else: st.success("✅ SCADA 연동됨")
 
     labor_file = st.file_uploader("3. 노무비 단가표 (선택)", type=["csv", "xlsx", "jpg", "png", "pdf"])
     labor_context, labor_media = process_multimodal_file(labor_file, "업로드된 노무비 단가표 참고")
@@ -210,7 +212,7 @@ if "latest_eng_prompt" not in st.session_state: st.session_state.latest_eng_prom
 
 if app_mode == "🏗️ 증설 엔지니어링 (발주/안전)":
     st.subheader("📊 부하 증설 검토 및 공사 발주 자동화")
-    st.info("장비 용량, 거리 등을 입력하거나 부하 리스트(이미지/PDF 가능)를 업로드하면 AI가 분석하여 최적화 보고서를 작성합니다.")
+    st.info("장비 용량, 거리 등을 입력하거나 부하 리스트를 업로드하면 AI가 분석하여 최적화 보고서를 작성합니다.")
     
     for msg in st.session_state.eng_msg:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
@@ -225,13 +227,13 @@ if app_mode == "🏗️ 증설 엔지니어링 (발주/안전)":
                     genai.configure(api_key=API_KEY)
                     sys_instruct = """당신은 Hook-Up 공사를 총괄하는 전기 엔지니어입니다.
                     다음 순서로 검토를 진행하세요:
-                    1. [증설 부하 리스트] 이미지/문서/표가 있다면 해당 데이터의 부하(kW)와 거리(m)를 합산하거나 우선 적용하여 evaluate_capacity_tool 및 precision_design_tool을 호출하세요. (데이터가 없으면 채팅 프롬프트 기준)
-                    2. evaluate_capacity_tool 호출 시 [SCADA 실시간 데이터] 이미지/문서/표 참조
-                    3. generate_boq_tool 호출 시 [노무비 단가 정보] 이미지/문서/표 참조
+                    1. [증설 부하 리스트] 데이터가 있다면 이를 기반으로 evaluate_capacity_tool 및 precision_design_tool을 호출하세요. (없으면 프롬프트 기준)
+                    2. evaluate_capacity_tool 호출 시, [SCADA 데이터]가 있다면 참조하고, 없다면 [단선도(SLD)] 상의 기존 부하 용량을 합산해 100% 가동 조건으로 현재 부하를 산정하세요.
+                    3. generate_boq_tool 호출 시 [노무비 단가 정보]를 참조하세요.
                     
                     최종 보고서 목차:
                     
-                    ### 1. SCADA 변압기 부하 분석
+                    ### 1. 변압기 부하 분석 (SCADA 또는 SLD 100% 가정 적용 명시)
                     - 내용 작성
                     
                     ### 2. KEC 정밀 케이블/차단기 Sizing
