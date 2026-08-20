@@ -29,7 +29,7 @@ except:
     API_KEY = None
 
 # ==========================================
-# 1. Core Engineering Logic (SCADA + KEC 정밀 + 노무비 엔진)
+# 1. Core Engineering Logic
 # ==========================================
 class UtilityEngineeringEngine:
     def __init__(self):
@@ -95,16 +95,12 @@ class UtilityEngineeringEngine:
         return {"tr_capacity_kva": tr_capacity_kva, "expected_load_rate": round(expected_rate, 2), "is_safe": is_safe, "analysis": analysis}
 
     def step3_generate_boq(self, breaker_name: str, cable_sq: float, length_m: float, labor_unit_cost: int = 280000) -> dict:
-        """자재비와 노무비(품셈 기반)를 분리하여 공사비를 산출합니다."""
         breaker_cost = self.price_db.get(breaker_name, 120000)
-        
-        # 문자열(예: '규격 초과')이 들어올 경우 임의의 최대 SQ(300)로 계산하여 오류 방지
         sq_val = cable_sq if isinstance(cable_sq, (int, float)) else 300
         cable_cost = (sq_val * 400) * length_m
         tray_cost = self.price_db["Cable_Tray_W300"] * length_m
         material_cost = breaker_cost + cable_cost + tray_cost
 
-        # 노무량 산출 (가상 표준품셈: 10m당 기본 1품 + 케이블 굵기에 따른 가중치)
         man_days = (length_m / 10) * (1 + (sq_val / 100))
         labor_cost = int(man_days * labor_unit_cost)
 
@@ -125,7 +121,6 @@ def evaluate_capacity_tool(tr_capacity_kva: float, current_load_kw: float, add_p
     return engine.step2_evaluate_capacity(tr_capacity_kva, current_load_kw, add_power_kw)
 
 def generate_boq_tool(breaker_name: str, cable_sq: float, length_m: float, labor_unit_cost: int = 280000) -> dict:
-    """자재비와 노무비를 산출합니다. labor_unit_cost는 2026년 표준 내선전공 단가(280,000원)가 기본값입니다."""
     return engine.step3_generate_boq(breaker_name, cable_sq, length_m, labor_unit_cost)
 
 tools_list = [precision_design_tool, evaluate_capacity_tool, generate_boq_tool]
@@ -190,6 +185,13 @@ with st.sidebar:
         labor_context = f"\n\n### [업로드된 노무비 단가표 참고]\n{df_labor.to_string(index=False)}"
         st.success("✅ 노무비 DB 연동됨")
 
+    load_schedule_file = st.file_uploader("4. 증설 부하 리스트 (선택)", type=["csv", "xlsx"])
+    load_schedule_context = "\n\n### [증설 부하 리스트]\n업로드된 파일 없음. 사용자의 채팅 프롬프트에서 증설 계획을 파악하세요."
+    if load_schedule_file:
+        df_schedule = pd.read_csv(load_schedule_file) if load_schedule_file.name.endswith('.csv') else pd.read_excel(load_schedule_file)
+        load_schedule_context = f"\n\n### [업로드된 증설 부하 리스트 참고]\n{df_schedule.to_string(index=False)}"
+        st.success("✅ 증설 부하 리스트 연동됨")
+
 if "eng_msg" not in st.session_state: st.session_state.eng_msg = []
 if "tutor_msg" not in st.session_state: st.session_state.tutor_msg = []
 if "latest_eng_result" not in st.session_state: st.session_state.latest_eng_result = None
@@ -197,26 +199,26 @@ if "latest_eng_prompt" not in st.session_state: st.session_state.latest_eng_prom
 
 if app_mode == "🏗️ 증설 엔지니어링 (발주/안전)":
     st.subheader("📊 부하 증설 검토 및 공사 발주 자동화")
-    st.info("장비 용량, 거리, 환경 등을 입력하면 AI가 SCADA와 노무비 DB를 조회하여 **문제별 맞춤 대안과 최종 통합 솔루션**을 제시합니다.")
+    st.info("장비 용량, 거리 등을 입력하거나 부하 리스트 파일을 업로드하면 AI가 SCADA와 DB를 조회하여 최적화 보고서를 작성합니다.")
     
     for msg in st.session_state.eng_msg:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
         
-    if prompt := st.chat_input("예: SCADA상 TR-1에 500kW 200m 증설. C공사 40도 수용률 0.8"):
+    if prompt := st.chat_input("예: 리스트 파일의 부하를 검토해줘. 또는 TR-1에 500kW 200m 증설 (C공사, 40도)"):
         st.session_state.eng_msg.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
 
         if API_KEY:
             with st.chat_message("assistant"):
-                with st.spinner("SCADA 분석, 정밀 규격 산출 및 노무비 계산 중..."):
+                with st.spinner("데이터 분석 및 정밀 규격 산출 중..."):
                     genai.configure(api_key=API_KEY)
-                    sys_instruct = """당신은 Hook-Up 공사를 총괄하는 최고 수준의 전기 엔지니어입니다.
-                    반드시 다음 순서로 검토를 진행하세요:
-                    1. evaluate_capacity_tool 호출 (SCADA 데이터 참조, 없으면 정격의 70% 가정)
-                    2. precision_design_tool 호출
-                    3. generate_boq_tool 호출 ([노무비 단가 정보]에서 추출한 단가 적용, 없으면 기본값 280,000원 적용)
+                    sys_instruct = """당신은 Hook-Up 공사를 총괄하는 전기 엔지니어입니다.
+                    다음 순서로 검토를 진행하세요:
+                    1. [증설 부하 리스트] 표가 있다면 해당 표의 부하(kW)와 거리(m)를 합산하거나 우선 적용하여 evaluate_capacity_tool 및 precision_design_tool을 호출하세요. (표가 없으면 사용자의 채팅 프롬프트를 기준으로 호출)
+                    2. evaluate_capacity_tool 호출 시 [SCADA 실시간 데이터] 참조
+                    3. generate_boq_tool 호출 시 [노무비 단가 정보] 참조
                     
-                    최종 보고서는 반드시 다음 목차와 형식을 엄격히 지켜 작성하세요:
+                    최종 보고서 목차:
                     
                     ### 1. SCADA 변압기 부하 분석
                     - 내용 작성
@@ -225,17 +227,15 @@ if app_mode == "🏗️ 증설 엔지니어링 (발주/안전)":
                     - 내용 작성
                     
                     ### 3. 🚨 주요 문제점 및 맞춤형 대안 (VE)
-                    - [문제 1: 변압기 용량 초과] (문제 설명)
-                      👉 [대안 1: TR-2 연계 및 부하 분산] (대안 설명)
-                    - [문제 2: 장거리 전압강하 및 케이블 규격 초과] (문제 설명)
-                      👉 [대안 2: 다조 포설 또는 수전반 위치 재배치] (대안 설명)
-                    (문제가 없다면 '특이사항 없음'으로 기재)
+                    - [문제 1: 내용] 👉 [대안 1: 내용]
+                    - [문제 2: 내용] 👉 [대안 2: 내용]
+                    (문제가 없다면 '특이사항 없음' 기재)
                     
                     ### 4. 발주 예상 공사비 (자재비/노무비 분리)
-                    - 내용 작성 (적용된 노무비 단가 명시)
+                    - 내용 작성
                     
                     ### 5. 🎯 최종 합리적 증설 솔루션 요약
-                    - 위의 모든 상황(계통, 케이블, 비용)을 종합 고려하여 현장 작업자에게 지시하듯 가장 합리적인 '최종 추천 스펙(케이블 SQ, 차단기, 연계 변압기)'을 한 문단으로 명확하게 결론지어 주세요."""
+                    - 결론 작성"""
                     
                     model = genai.GenerativeModel(model_name='gemini-3.6-flash', system_instruction=sys_instruct, tools=tools_list)
                     chat = model.start_chat(enable_automatic_function_calling=True)
@@ -244,7 +244,7 @@ if app_mode == "🏗️ 증설 엔지니어링 (발주/안전)":
                     if sld_file:
                         if sld_file.type == "application/pdf": contents.append({"mime_type": "application/pdf", "data": sld_file.getvalue()})
                         else: contents.append(Image.open(sld_file))
-                    contents.append(prompt + scada_context + labor_context)
+                    contents.append(prompt + scada_context + labor_context + load_schedule_context)
 
                     retry_delay = 5
                     for attempt in range(3):
@@ -255,7 +255,7 @@ if app_mode == "🏗️ 증설 엔지니어링 (발주/안전)":
                         except Exception as e:
                             if "503" in str(e) or "429" in str(e):
                                 if attempt < 2: time.sleep(retry_delay); retry_delay *= 2
-                                else: raise Exception("현재 구글 AI 서버가 혼잡합니다. 잠시 후 다시 시도해주세요.")
+                                else: raise Exception("서버 혼잡.")
                             else: raise e
                     
                     st.markdown(final_text)
@@ -286,7 +286,6 @@ if app_mode == "🏗️ 증설 엔지니어링 (발주/안전)":
 
 else:
     st.subheader("👨‍🏫 SLD 도면 스터디 (친절한 사수 AI)")
-    # 튜터링 파트는 기존과 동일
     for msg in st.session_state.tutor_msg:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
         
