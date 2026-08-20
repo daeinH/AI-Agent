@@ -217,13 +217,38 @@ if app_mode == "🏗️ 증설 엔지니어링 (발주/안전)":
                     st.session_state.latest_eng_result = final_text
                     st.session_state.latest_eng_prompt = prompt
 
-    # 검토 완료 후 엑셀 다운로드 버튼 노출
+    # 검토 완료 후 엑셀 다운로드 및 미리보기 노출
     if st.session_state.latest_eng_result:
         st.markdown("---")
-        st.subheader("📑 결재용 자동 생성 문서")
+        st.subheader("📑 결재용 문서 미리보기 및 다운로드")
+        
+        # 1. 웹 화면용 데이터프레임(표) 생성
+        df_draft = pd.DataFrame([
+            ["공사명", "Utility 설비 Hook-up 증설 공사"],
+            ["요청 부서", "생산기술팀"],
+            ["요청 요약", st.session_state.latest_eng_prompt],
+            ["AI 검토 내용", "아래 검토 결과 원문 참조"]
+        ], columns=["항목", "내용"])
+        
+        df_ptw = pd.DataFrame([
+            ["작업 위험성 평가", "감전, 아크 플래시, 단락 사고 위험"],
+            ["LOTO (차단 절차)", "1. 메인 판넬 차단기(MCCB) Open\n2. 잠금장치(Lock) 체결 및 위험 Tag 부착"],
+            ["안전 점검", "1. 검전기로 무전압 확인\n2. 잔류 전하 방전 및 접지 용구 설치"]
+        ], columns=["구분", "안전 확보 지침 (LOTO)"])
+
+        # 2. 웹 화면에 표 미리보기 출력
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("#### 📄 1. 증설 기안서 요약")
+            st.table(df_draft)
+        with col2:
+            st.markdown("#### 📄 2. 안전작업허가서(PTW)")
+            st.table(df_ptw)
+
+        # 3. 기존 다운로드 버튼 유지
         excel_data = generate_excel_document(st.session_state.latest_eng_prompt, st.session_state.latest_eng_result)
         st.download_button(
-            label="📥 공사 발주 품의서 및 안전작업허가서(PTW) 엑셀 다운로드",
+            label="📥 공사 발주 품의서 및 안전작업허가서(PTW) 엑셀 원본 다운로드",
             data=excel_data,
             file_name="Hook-Up_기안_및_안전계획.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
