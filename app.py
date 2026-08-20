@@ -171,7 +171,7 @@ if app_mode == "🏗️ 증설 엔지니어링 (발주/안전)":
                     5. 안전작업 계획 (PTW 및 LOTO 절차 요약) <- 필수 추가
                     6. 발주 예상 공사비"""
                     
-                    model = genai.GenerativeModel(model_name='gemini-1.5-flash-latest', system_instruction=sys_instruct, tools=tools_list)
+                    model = genai.GenerativeModel(model_name='gemini-3.6-flash', system_instruction=sys_instruct, tools=tools_list)
                     chat = model.start_chat(enable_automatic_function_calling=True)
                     
                     contents = []
@@ -228,7 +228,7 @@ else:
                     sys_instruct = """당신은 갓 입사한 전기 직무 신입사원에게 도면(SLD)을 친절하게 가르쳐주는 10년 차 사수입니다. 
                     계산 Tool은 사용하지 마세요. 도면 이미지를 보고 설비의 역할, 전기의 흐름, 현장 용어를 아주 알기 쉽게 설명해주세요."""
                     
-                    model = genai.GenerativeModel(model_name='gemini-1.5-flash-latest', system_instruction=sys_instruct)
+                    model = genai.GenerativeModel(model_name='gemini-3.6-flash', system_instruction=sys_instruct)
                     
                     contents = []
                     if sld_file:
