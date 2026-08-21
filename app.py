@@ -29,11 +29,10 @@ except:
     API_KEY = None
 
 # ==========================================
-# 1. Core Engineering Logic (Custom Cost 지원)
+# 1. Core Engineering Logic
 # ==========================================
 class UtilityEngineeringEngine:
     def __init__(self):
-        # 시스템 내장 기본 단가 (Fallback)
         self.price_db = {
             "MCCB_50AF": 45000, "MCCB_125AF": 120000, "MCCB_250AF": 250000,
             "MCCB_400AF": 450000, "MCCB_630AF": 750000, "MCCB_800AF": 1100000, "MCCB_1000AF": 1500000,
@@ -50,23 +49,33 @@ class UtilityEngineeringEngine:
             (300, 621, 363, 500, 0.074, 0.073)
         ]
 
-    def step1_advanced_sizing(self, load_kw: float, distance_m: float, power_factor: float = 0.9, demand_factor: float = 1.0, is_continuous: bool = True, power_type: str = "3상4선", install_method: str = "E", temp_c: float = 30.0) -> dict:
+    def step1_advanced_sizing(self, load_kw: float, distance_m: float, power_factor: float = 0.9, demand_factor: float = 1.0, is_continuous: bool = True, power_type: str = "3상4선", install_method: str = "E", temp_c: float = 30.0, is_critical_load: bool = False, tr_capacity_kva: float = 1000.0) -> dict:
         if "3상4선" in power_type: v_line, v_base, phase_type, b_coeff = 380, 220, 3, math.sqrt(3)
         elif "단상" in power_type: v_line, v_base, phase_type, b_coeff = 220, 220, 1, 2.0
         else: v_line, v_base, phase_type, b_coeff = 380, 380, 3, math.sqrt(3)
 
+        # 1. 정격 전류 및 여유율 적용
         applied_kw = load_kw * demand_factor
         current = (applied_kw * 1000) / (math.sqrt(3) * v_line * power_factor) if phase_type == 3 else (applied_kw * 1000) / (v_line * power_factor)
-        
         margin = 1.25 if is_continuous else 1.0
         target_cb = current * margin
         cb_standard = [30, 50, 100, 125, 200, 250, 400, 630, 800, 1000]
         selected_cb = next((cb for cb in cb_standard if cb >= target_cb), 1000)
 
+        # 2. 고장전류(단락전류) 산출 및 차단기 차단용량(kA) 검증 (%Z = 5.0% 가정)
+        tr_rated_current = tr_capacity_kva / (math.sqrt(3) * (v_line / 1000)) if tr_capacity_kva > 0 else 1000 / (math.sqrt(3) * 0.38)
+        short_circuit_current_ka = (100 / 5.0) * tr_rated_current / 1000
+        recommended_ka = 50 if short_circuit_current_ka > 25 else 25
+
+        # 3. 무정전전원(UPS) 연계 여부 판단
+        power_source = "UPS 또는 C-UPS 판넬 연계 필수" if is_critical_load else "일반 TR 판넬 연계"
+
+        # 4. 온도 및 환경 계수 적용
         temp_factor = 1.0 if temp_c <= 30 else (0.96 if temp_c <= 35 else (0.91 if temp_c <= 40 else 0.82))
         method_idx = 2 if "A1" in install_method else (3 if "C" in install_method else 1)
         sin_theta = math.sqrt(1 - power_factor**2)
 
+        # 5. KEC 정밀 케이블 Sizing
         optimal_sq, final_v_drop = None, 999.0
         for row in self.cable_data:
             sq, base_amp, r_val, x_val = row[0], row[method_idx], row[4], row[5]
@@ -82,8 +91,9 @@ class UtilityEngineeringEngine:
 
         return {
             "load_current_A": round(current, 1),
-            "design_margin_applied": margin,
-            "selected_breaker_AT": selected_cb,
+            "selected_breaker_AT": f"{selected_cb}AT",
+            "required_breaker_kA": f"최소 {recommended_ka}kA 이상 (단락전류 {round(short_circuit_current_ka, 1)}kA)",
+            "recommended_power_source": power_source,
             "optimal_cable_SQ": optimal_sq if optimal_sq else "규격 초과 (다조 포설 필요)",
             "voltage_drop_percent": round(final_v_drop, 2)
         }
@@ -96,9 +106,7 @@ class UtilityEngineeringEngine:
         return {"tr_capacity_kva": tr_capacity_kva, "expected_load_rate": round(expected_rate, 2), "is_safe": is_safe, "analysis": analysis}
 
     def step3_generate_boq(self, breaker_name: str, cable_sq: float, length_m: float, labor_unit_cost: int = 280000, custom_breaker_cost: int = 0, custom_cable_cost_per_m: int = 0, custom_tray_cost_per_m: int = 0) -> dict:
-        # 파일 단가가 있으면 우선 적용, 없으면 내장 기본값 적용
         breaker_cost = custom_breaker_cost if custom_breaker_cost > 0 else self.price_db.get(breaker_name, 120000)
-        
         sq_val = cable_sq if isinstance(cable_sq, (int, float)) else 300
         
         cable_cost_per_m = custom_cable_cost_per_m if custom_cable_cost_per_m > 0 else (sq_val * 400)
@@ -109,16 +117,11 @@ class UtilityEngineeringEngine:
         
         material_cost = breaker_cost + cable_cost + tray_cost
 
-        # 노무비 계산
         man_days = (length_m / 10) * (1 + (sq_val / 100))
         labor_cost = int(man_days * labor_unit_cost)
 
         return {
-            "applied_material_costs": {
-                "breaker": breaker_cost,
-                "cable_per_m": cable_cost_per_m,
-                "tray_per_m": tray_cost_per_m
-            },
+            "applied_material_costs": {"breaker": breaker_cost, "cable_per_m": cable_cost_per_m, "tray_per_m": tray_cost_per_m},
             "material_cost": material_cost,
             "labor_cost": labor_cost,
             "total_estimated_cost": material_cost + labor_cost,
@@ -128,14 +131,14 @@ class UtilityEngineeringEngine:
 
 engine = UtilityEngineeringEngine()
 
-def precision_design_tool(load_kw: float, distance_m: float, power_factor: float = 0.9, demand_factor: float = 1.0, is_continuous: bool = True, power_type: str = "3상4선", install_method: str = "E", temp_c: float = 30.0) -> dict:
-    return engine.step1_advanced_sizing(load_kw, distance_m, power_factor, demand_factor, is_continuous, power_type, install_method, temp_c)
+def precision_design_tool(load_kw: float, distance_m: float, power_factor: float = 0.9, demand_factor: float = 1.0, is_continuous: bool = True, power_type: str = "3상4선", install_method: str = "E", temp_c: float = 30.0, is_critical_load: bool = False, tr_capacity_kva: float = 1000.0) -> dict:
+    """장비 용량, 거리 등과 함께 주요 공정/안전 설비 여부(is_critical_load)와 접속되는 변압기 용량(tr_capacity_kva)을 입력받아 UPS 연계 및 단락전류를 고려한 정밀 Sizing을 수행합니다."""
+    return engine.step1_advanced_sizing(load_kw, distance_m, power_factor, demand_factor, is_continuous, power_type, install_method, temp_c, is_critical_load, tr_capacity_kva)
 
 def evaluate_capacity_tool(tr_capacity_kva: float, current_load_kw: float, add_power_kw: float) -> dict:
     return engine.step2_evaluate_capacity(tr_capacity_kva, current_load_kw, add_power_kw)
 
 def generate_boq_tool(breaker_name: str, cable_sq: float, length_m: float, labor_unit_cost: int = 280000, custom_breaker_cost: int = 0, custom_cable_cost_per_m: int = 0, custom_tray_cost_per_m: int = 0) -> dict:
-    """공사비를 산출합니다. 자재 단가표가 주어졌을 경우, AI가 문서에서 단가를 추출하여 custom_breaker_cost, custom_cable_cost_per_m 등에 입력하세요. 없으면 0으로 입력합니다."""
     return engine.step3_generate_boq(breaker_name, cable_sq, length_m, labor_unit_cost, custom_breaker_cost, custom_cable_cost_per_m, custom_tray_cost_per_m)
 
 tools_list = [precision_design_tool, evaluate_capacity_tool, generate_boq_tool]
@@ -155,26 +158,22 @@ def generate_excel_document(prompt_text, ai_response_text):
     for cell in ws1[1]: cell.font, cell.fill, cell.alignment = header_font, header_fill, align_center
     ws1.append(["요청 요약", prompt_text])
     ws1.append(["AI 최종 솔루션 요약", ai_response_text[:3000]])
-    ws1.column_dimensions['A'].width = 25
-    ws1.column_dimensions['B'].width = 100
+    ws1.column_dimensions['A'].width = 25; ws1.column_dimensions['B'].width = 100
 
     ws2 = wb.create_sheet(title="2. 안전작업허가서(PTW)")
     ws2.append(["구분", "안전 확보 지침 (LOTO)"])
     for cell in ws2[1]: cell.font, cell.fill, cell.alignment = header_font, header_fill, align_center
-    ws2.append(["작업 위험성 평가", "감전, 아크 플래시, 단락 사고 위험"])
+    ws2.append(["작업 위험성 평가", "감전, 단락 사고 위험, 비상 설비 정전 위험"])
     ws2.append(["LOTO (차단 절차)", "1. 메인 판넬 차단기(MCCB) Open\n2. 잠금장치(Lock) 체결 및 위험 Tag 부착"])
-    ws2.column_dimensions['A'].width = 25
-    ws2.column_dimensions['B'].width = 80
+    ws2.column_dimensions['A'].width = 25; ws2.column_dimensions['B'].width = 80
 
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
     return output
 
-# 멀티모달 파일 처리 헬퍼 함수
 def process_multimodal_file(file_obj, title_text):
-    text_context = ""
-    media_item = None
+    text_context, media_item = "", None
     if file_obj:
         if file_obj.name.endswith(('.csv', '.xlsx')):
             df = pd.read_csv(file_obj) if file_obj.name.endswith('.csv') else pd.read_excel(file_obj)
@@ -191,7 +190,7 @@ def process_multimodal_file(file_obj, title_text):
 # 3. Streamlit UI
 # ==========================================
 st.set_page_config(page_title="신입 엔지니어 필수 AI Agent", page_icon="⚡", layout="wide")
-st.title("⚡ Utility 전기 AI Agent (KEC 설계 & 커스텀 DB 연동)")
+st.title("⚡ Utility 전기 AI Agent (KEC 정밀 + 고장전류/UPS 검증)")
 
 with st.sidebar:
     st.header("🛠️ 업무 모드 선택")
@@ -204,28 +203,19 @@ with st.sidebar:
 
     scada_file = st.file_uploader("2. SCADA 부하 데이터 (선택)", type=["csv", "xlsx", "jpg", "png", "pdf"])
     scada_context, scada_media = process_multimodal_file(scada_file, "업로드된 SCADA 실시간 데이터 참고")
-    if not scada_file:
-        scada_context = "\n\n### [SCADA 데이터 부재]\n업로드된 SCADA 데이터가 없습니다. 단선도(SLD)를 분석하여 기존 부하 용량을 합산해 100% 가동 조건으로 산정하세요."
-    else: st.success("✅ SCADA 연동됨")
-
+    if not scada_file: scada_context = "\n\n### [SCADA 데이터 부재]\n단선도(SLD)를 분석해 기존 부하를 100% 가동 조건으로 산정하세요."
+    
     labor_file = st.file_uploader("3. 노무비 단가표 (선택)", type=["csv", "xlsx", "jpg", "png", "pdf"])
     labor_context, labor_media = process_multimodal_file(labor_file, "업로드된 노무비 단가표 참고")
-    if not labor_file:
-        labor_context = "\n\n### [노무비 단가 정보]\n업로드된 파일 없음. 2026년 표준 내선전공 단가(280,000원/인) 적용 요망."
-    else: st.success("✅ 노무비 DB 연동됨")
+    if not labor_file: labor_context = "\n\n### [노무비 단가 정보]\n업로드 없음. 2026년 표준 내선전공 단가(280,000원/인) 적용 요망."
 
     load_schedule_file = st.file_uploader("4. 증설 부하 리스트 (선택)", type=["csv", "xlsx", "jpg", "png", "pdf"])
     load_schedule_context, load_schedule_media = process_multimodal_file(load_schedule_file, "업로드된 증설 부하 리스트 참고")
-    if not load_schedule_file:
-        load_schedule_context = "\n\n### [증설 부하 리스트]\n업로드된 파일 없음. 사용자의 채팅 프롬프트에서 증설 계획을 파악하세요."
-    else: st.success("✅ 증설 부하 리스트 연동됨")
+    if not load_schedule_file: load_schedule_context = "\n\n### [증설 부하 리스트]\n업로드 없음. 사용자의 채팅 프롬프트에서 증설 계획을 파악하세요."
 
-    # 💡 신규 기능: 자재 단가표 업로드
     material_file = st.file_uploader("5. 자재 단가표 (선택)", type=["csv", "xlsx", "jpg", "png", "pdf"])
     material_context, material_media = process_multimodal_file(material_file, "업로드된 자재 단가표 참고")
-    if not material_file:
-        material_context = "\n\n### [자재 단가 정보]\n업로드된 파일 없음. 시스템 내장 기본 자재 단가를 적용하세요."
-    else: st.success("✅ 자재 단가표 연동됨")
+    if not material_file: material_context = "\n\n### [자재 단가 정보]\n업로드 없음. 시스템 내장 기본 자재 단가를 적용하세요."
 
 if "eng_msg" not in st.session_state: st.session_state.eng_msg = []
 if "tutor_msg" not in st.session_state: st.session_state.tutor_msg = []
@@ -234,54 +224,54 @@ if "latest_eng_prompt" not in st.session_state: st.session_state.latest_eng_prom
 
 if app_mode == "🏗️ 증설 엔지니어링 (발주/안전)":
     st.subheader("📊 부하 증설 검토 및 공사 발주 자동화")
-    st.info("장비 용량, 거리를 입력하거나 리스트를 업로드하면 AI가 SCADA/노무비/자재 DB를 조회하여 최적화 보고서를 작성합니다.")
+    st.info("장비 증설 시 KEC 정밀 케이블 Sizing은 물론, **단락전류(kA) 검증 및 UPS(무정전전원) 필요 여부**까지 AI가 판단합니다.")
     
     for msg in st.session_state.eng_msg:
         with st.chat_message(msg["role"]): st.markdown(msg["content"])
         
-    if prompt := st.chat_input("예: 캡처된 증설 리스트 및 단가표 기반으로 검토해줘. 또는 TR-1에 500kW 200m 증설"):
+    if prompt := st.chat_input("예: 가스 감지기 및 스크러버(중요 설비) 50kW 100m 증설. TR용량 1000kVA."):
         st.session_state.eng_msg.append({"role": "user", "content": prompt})
         with st.chat_message("user"): st.markdown(prompt)
 
         if API_KEY:
             with st.chat_message("assistant"):
-                with st.spinner("이미지/PDF 분석 및 정밀 규격 산출 중..."):
+                with st.spinner("계통 데이터 분석 및 정밀 규격 산출 중..."):
                     genai.configure(api_key=API_KEY)
-                    sys_instruct = """당신은 Hook-Up 공사를 총괄하는 전기 엔지니어입니다.
+                    sys_instruct = """당신은 반도체 Fab Hook-Up 공사를 총괄하는 최고 수준의 전기 엔지니어입니다.
                     다음 순서로 검토를 진행하세요:
-                    1. [증설 부하 리스트] 데이터를 기반으로 evaluate_capacity_tool 및 precision_design_tool을 호출하세요. (없으면 프롬프트 기준)
-                    2. evaluate_capacity_tool 호출 시, [SCADA 데이터]를 참조하거나, 없다면 [단선도(SLD)] 상의 부하를 합산하세요.
-                    3. generate_boq_tool 호출 시 [노무비 단가 정보] 및 [자재 단가 정보]를 참조하여, 파일에 기재된 단가가 있다면 매개변수(custom_breaker_cost 등)에 반영하세요.
+                    1. evaluate_capacity_tool 호출 (SCADA 또는 도면 기반 부하 산정)
+                    2. precision_design_tool 호출 시, 요청된 장비가 '가스감지기, 스크러버, 핵심공정장비' 등 중요/중단불가 설비로 판단되면 is_critical_load=True 로 설정하여 UPS 연계 여부를 확인하고, 해당 변압기 용량을 tr_capacity_kva 에 입력하여 고장전류(kA)를 반영하세요.
+                    3. generate_boq_tool 호출 시 [노무비/자재 단가 정보] 참조
                     
                     최종 보고서 목차:
                     
-                    ### 1. 변압기 부하 분석 (SCADA 또는 SLD 100% 가정 적용 명시)
-                    - 내용 작성
+                    ### 1. 변압기 부하 분석 및 UPS 연계 검토
+                    - SCADA/SLD 기반 부하율 분석
+                    - ⚡ [신규 기능] 증설 장비 중요도(Critical 여부) 평가 및 UPS/C-UPS 연계 필요성
                     
-                    ### 2. KEC 정밀 케이블/차단기 Sizing
-                    - 내용 작성
+                    ### 2. KEC 정밀 Sizing 및 고장전류 검증
+                    - 최적 케이블 SQ 및 전압강하율
+                    - ⚡ [신규 기능] 변압기 용량 기준 단락전류 계산 및 차단기 필요 차단용량(kA) 명시
                     
                     ### 3. 🚨 주요 문제점 및 맞춤형 대안 (VE)
                     - [문제 1: 내용] 👉 [대안 1: 내용]
                     - [문제 2: 내용] 👉 [대안 2: 내용]
                     (문제가 없다면 '특이사항 없음' 기재)
                     
-                    ### 4. 발주 예상 공사비 (자재비/노무비 분리)
-                    - 내용 작성 (적용된 자재 단가 및 노무비 단가의 출처를 명시할 것)
+                    ### 4. 발주 예상 공사비
+                    - 자재비 및 노무비(단가 출처 명시)
                     
                     ### 5. 🎯 최종 합리적 증설 솔루션 요약
-                    - 결론 작성"""
+                    - 계통, 케이블, 차단용량(kA), UPS 여부를 종합한 한 문단 결론"""
                     
                     model = genai.GenerativeModel(model_name='gemini-3.6-flash', system_instruction=sys_instruct, tools=tools_list)
                     chat = model.start_chat(enable_automatic_function_calling=True)
                     
                     contents = []
-                    # SLD 파일 처리
                     if sld_file:
                         if sld_file.type == "application/pdf": contents.append({"mime_type": "application/pdf", "data": sld_file.getvalue()})
                         else: contents.append(Image.open(sld_file))
                     
-                    # 새로운 멀티모달 파일(이미지/PDF) 모두 추가
                     for media_item in [scada_media, labor_media, load_schedule_media, material_media]:
                         if media_item: contents.append(media_item)
 
@@ -320,7 +310,7 @@ if app_mode == "🏗️ 증설 엔지니어링 (발주/안전)":
             st.table(df_draft)
         with col2:
             st.markdown("#### 📄 2. 안전작업허가서(PTW)")
-            st.table(pd.DataFrame([["위험성 평가", "감전, 단락 사고 위험"], ["LOTO 절차", "1. 차단기 Open 2. 잠금 및 Tag 부착"]], columns=["구분", "지침"]))
+            st.table(pd.DataFrame([["위험성 평가", "감전, 단락 사고 위험, 비상 정전 위험"], ["LOTO 절차", "1. 차단기 Open 2. 잠금 및 Tag 부착"]], columns=["구분", "지침"]))
 
         excel_data = generate_excel_document(st.session_state.latest_eng_prompt, st.session_state.latest_eng_result)
         st.download_button("📥 통합 보고서 다운로드 (엑셀)", data=excel_data, file_name="HookUp_최종결정서.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
